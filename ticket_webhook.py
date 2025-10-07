@@ -310,6 +310,52 @@ async def handle_ticket_closed(request: Request):
         logger.error(f"Erro ao processar ticket fechado: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao processar ticket: {str(e)}")
         
+def send_response_to_platform(response_data: dict):
+    """
+    Envia a resposta do consultor de volta para a plataforma.
+    
+    Args:
+        response_data: Dicionário com os dados da resposta
+            - ticket_id: ID do ticket no GLPI
+            - external_id: ID externo (ID na plataforma)
+            - followup_id: ID do followup
+            - content: Conteúdo da resposta
+            - user_name: Nome do consultor
+            - date_creation: Data da resposta
+    """
+    external_id = response_data.get('external_id')
+    content = response_data.get('content')
+    user_name = response_data.get('user_name')
+    
+    logger.info(f"Enviando resposta para a plataforma:")
+    logger.info(f"  External ID: {external_id}")
+    logger.info(f"  Consultor: {user_name}")
+    logger.info(f"  Conteúdo: {content}")
+    
+    # IMPLEMENTAR AQUI: Enviar para sua plataforma
+    # Exemplo de implementação:
+    # 
+    # if external_id:
+    #     platform_api_url = "https://sua-plataforma.com/api/messages"
+    #     payload = {
+    #         "conversation_id": external_id,
+    #         "message": content,
+    #         "sender": user_name,
+    #         "sender_type": "agent"
+    #     }
+    #     
+    #     response = requests.post(platform_api_url, json=payload)
+    #     if response.status_code == 200:
+    #         logger.info(f"Resposta enviada com sucesso para a plataforma")
+    #     else:
+    #         logger.error(f"Falha ao enviar resposta: {response.status_code}")
+    
+    # Por enquanto, apenas registra no log
+    if not external_id:
+        logger.warning("Ticket não possui external_id. Não é possível enviar para a plataforma.")
+    else:
+        logger.info(f"Resposta pronta para ser enviada para a plataforma (external_id: {external_id})")
+
 def process_closed_ticket(payload: TicketClosedPayload):
     """
     Função para processar o ticket fechado.
@@ -396,6 +442,89 @@ async def handle_ticket_updated(request: Request):
     except Exception as e:
         logger.error(f"Erro ao processar atualização de ticket: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao processar atualização: {str(e)}")
+
+@app.post("/webhook/followup-added", summary="Endpoint para novas respostas do consultor")
+async def handle_followup_added(request: Request):
+    """
+    Endpoint para receber notificações quando um consultor adiciona uma resposta ao ticket.
+    Este é o endpoint principal para capturar respostas do GLPI e enviar de volta para a plataforma.
+    """
+    try:
+        # Captura o payload bruto
+        raw_payload = await request.json()
+        logger.info(f"Followup adicionado - Raw payload: {raw_payload}")
+        
+        # Extrai informações do followup
+        followup = raw_payload.get('item', {})
+        followup_id = followup.get('id')
+        ticket_id = followup.get('items_id')  # ID do ticket relacionado
+        followup_content = followup.get('content', '')
+        user_id = followup.get('users_id')
+        date_creation = followup.get('date_creation')
+        is_private = followup.get('is_private', 0)
+        
+        logger.info(f"Nova resposta no ticket {ticket_id}")
+        logger.info(f"Followup ID: {followup_id}")
+        logger.info(f"Conteúdo: {followup_content}")
+        logger.info(f"Usuário: {user_id}")
+        logger.info(f"Privado: {is_private}")
+        
+        # Inicializa sessão com o GLPI para obter informações detalhadas
+        session_token = init_glpi_session()
+        if not session_token:
+            logger.error("Falha ao iniciar sessão com o GLPI")
+            raise HTTPException(status_code=500, detail="Falha ao conectar ao GLPI")
+        
+        try:
+            # Obtém detalhes do ticket para pegar o external_id
+            ticket_details = get_ticket_details(ticket_id, session_token)
+            external_id = None
+            
+            if ticket_details:
+                external_id = ticket_details.get('externalid') or ticket_details.get('external_id')
+                logger.info(f"External ID do ticket: {external_id}")
+            
+            # Obtém informações do usuário que adicionou o followup
+            user_name = "Consultor GLPI"
+            if user_id:
+                user_details = get_user_details(user_id, session_token)
+                if user_details:
+                    user_name = f"{user_details.get('firstname', '')} {user_details.get('realname', '')}".strip() or user_details.get('name', 'Consultor GLPI')
+            
+            # Prepara os dados para enviar de volta para a plataforma
+            response_data = {
+                "ticket_id": ticket_id,
+                "external_id": external_id,
+                "followup_id": followup_id,
+                "content": followup_content,
+                "user_name": user_name,
+                "user_id": user_id,
+                "date_creation": date_creation,
+                "is_private": is_private,
+                "ticket_details": ticket_details
+            }
+            
+            # Aqui você deve implementar a lógica para enviar a resposta de volta para sua plataforma
+            # Por exemplo:
+            # - Enviar para API da plataforma usando o external_id
+            # - Publicar em uma fila de mensagens
+            # - Salvar em banco de dados para processamento posterior
+            
+            send_response_to_platform(response_data)
+            
+        finally:
+            # Finaliza a sessão com o GLPI
+            kill_glpi_session(session_token)
+        
+        return {
+            "status": "success",
+            "message": f"Resposta do ticket {ticket_id} processada com sucesso",
+            "ticket_id": ticket_id,
+            "external_id": external_id
+        }
+    except Exception as e:
+        logger.error(f"Erro ao processar followup: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao processar followup: {str(e)}")
 
 @app.post("/webhook/debug", summary="Endpoint de debug para capturar qualquer payload")
 async def debug_webhook(request: Request):

@@ -120,7 +120,8 @@ def main():
         ticket_data = {
             'name': 'Ticket criado via API REST',
             'content': 'Este é um ticket de teste criado usando requisições REST diretas.',
-            'entities_id': 0  # Entidade raiz
+            'entities_id': 0,  # Entidade raiz
+            'externalid': 'EXT-12345',
         }
         
         # Exemplo de histórico de conversa
