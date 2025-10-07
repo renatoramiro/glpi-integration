@@ -152,6 +152,121 @@ def kill_glpi_session(session_token: str):
         logger.error(f"Erro ao finalizar sessão GLPI: {str(e)}")
         return False
 
+def add_followup_to_ticket(ticket_id: int, content: str, session_token: str, is_private: int = 0):
+    """
+    Adiciona um followup (observação/mensagem) a um ticket.
+    
+    Args:
+        ticket_id: ID do ticket no GLPI
+        content: Conteúdo da mensagem
+        session_token: Token da sessão
+        is_private: 0 = público, 1 = privado
+    
+    Returns:
+        Dicionário com informações do followup criado
+    """
+    url = f"{GLPI_BASE_URL}/Ticket/{ticket_id}/ITILFollowup"
+    headers = {
+        'Content-Type': 'application/json',
+        'Session-Token': session_token,
+        'App-Token': GLPI_APP_TOKEN
+    }
+    
+    followup_data = {
+        "itemtype":"Ticket",
+        "items_id": ticket_id,
+        'content': content,
+        'is_private': is_private
+    }
+    
+    payload = {
+        'input': followup_data
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, verify=False)
+        if response.status_code in [200, 201]:
+            return response.json()
+        else:
+            logger.error(f"Falha ao adicionar followup ao ticket {ticket_id}: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        logger.error(f"Erro ao adicionar followup ao ticket {ticket_id}: {str(e)}")
+        return None
+
+def search_ticket_by_id(ticket_id: int, session_token: str):
+    """
+    Busca um ticket pelo ID.
+    
+    Args:
+        ticket_id: ID do ticket no GLPI
+        session_token: Token da sessão
+    
+    Returns:
+        Dados do ticket se encontrado, None caso contrário
+    """
+    try:
+        ticket_details = get_ticket_details(ticket_id, session_token)
+        if ticket_details:
+            return ticket_details
+        else:
+            logger.warning(f"Ticket {ticket_id} não encontrado")
+            return None
+    except Exception as e:
+        logger.error(f"Erro ao buscar ticket {ticket_id}: {str(e)}")
+        return None
+
+def search_ticket_by_external_id(external_id: str, session_token: str):
+    """
+    Busca um ticket pelo ID externo.
+    
+    Args:
+        external_id: ID externo do ticket
+        session_token: Token da sessão
+    
+    Returns:
+        ID do ticket se encontrado, None caso contrário
+    """
+    # Abordagem alternativa: buscar tickets recentes e filtrar pelo externalid
+    url = f"{GLPI_BASE_URL}/Ticket"
+    headers = {
+        'Content-Type': 'application/json',
+        'Session-Token': session_token,
+        'App-Token': GLPI_APP_TOKEN
+    }
+    
+    # Busca os últimos 100 tickets
+    params = {
+        'range': '0-99',
+        'order': 'DESC',
+        'sort': 'id'
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, params=params, verify=False)
+        if response.status_code == 200:
+            tickets = response.json()
+            logger.info(f"Buscando entre {len(tickets)} tickets...")
+            
+            # Filtra pelo externalid
+            for ticket in tickets:
+                ticket_externalid = ticket.get('externalid') or ticket.get('external_id')
+                logger.debug(f"Ticket {ticket['id']}: externalid = {ticket_externalid}")
+                
+                if ticket_externalid == external_id:
+                    logger.info(f"Ticket encontrado: ID {ticket['id']} com external_id {external_id}")
+                    return ticket['id']
+            
+            logger.warning(f"Nenhum ticket encontrado com external_id: {external_id}")
+            logger.info(f"Dica: Verifique se o ticket foi criado com o campo 'externalid' correto")
+            return None
+        else:
+            logger.error(f"Falha ao buscar tickets: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        logger.error(f"Erro ao buscar ticket por external_id: {str(e)}")
+        return None
+
 class TicketClosedPayload(BaseModel):
     """Modelo para o payload de ticket fechado"""
     ticket_id: Optional[int] = None
@@ -312,7 +427,7 @@ async def handle_ticket_closed(request: Request):
         
 def send_response_to_platform(response_data: dict):
     """
-    Envia a resposta do consultor de volta para a plataforma.
+    Envia a resposta do GLPI de volta para a plataforma.
     
     Args:
         response_data: Dicionário com os dados da resposta
@@ -332,7 +447,7 @@ def send_response_to_platform(response_data: dict):
     logger.info(f"  Consultor: {user_name}")
     logger.info(f"  Conteúdo: {content}")
     
-    # IMPLEMENTAR AQUI: Enviar para sua plataforma
+    # TODO: Enviar para sua plataforma
     # Exemplo de implementação:
     # 
     # if external_id:
@@ -422,31 +537,31 @@ async def health_check():
     """
     return {"status": "healthy", "service": "GLPI Ticket Webhook"}
 
-@app.post("/webhook/ticket-updated", summary="Endpoint para tickets atualizados")
-async def handle_ticket_updated(request: Request):
-    """
-    Endpoint genérico para receber notificações de atualização de tickets.
-    """
-    try:
-        payload = await request.json()
-        logger.info(f"Ticket atualizado recebido: {payload}")
+# @app.post("/webhook/ticket-updated", summary="Endpoint para tickets atualizados")
+# async def handle_ticket_updated(request: Request):
+#     """
+#     Endpoint para receber notificações de atualização de tickets do GLPI.
+#     """
+#     try:
+#         payload = await request.json()
+#         logger.info(f"Ticket atualizado recebido: {payload}")
         
-        # Processar a atualização do ticket
-        # Implemente sua lógica aqui
+#         # Processar a atualização do ticket
+#         # Implemente sua lógica aqui
         
-        return {
-            "status": "success",
-            "message": "Atualização de ticket recebida e processada",
-            "data": payload
-        }
-    except Exception as e:
-        logger.error(f"Erro ao processar atualização de ticket: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao processar atualização: {str(e)}")
+#         return {
+#             "status": "success",
+#             "message": "Atualização de ticket recebida e processada",
+#             "data": payload
+#         }
+#     except Exception as e:
+#         logger.error(f"Erro ao processar atualização de ticket: {str(e)}")
+#         raise HTTPException(status_code=500, detail=f"Erro ao processar atualização: {str(e)}")
 
-@app.post("/webhook/followup-added", summary="Endpoint para novas respostas do consultor")
+@app.post("/webhook/followup-added", summary="Endpoint para novas respostas do consultor GLPI")
 async def handle_followup_added(request: Request):
     """
-    Endpoint para receber notificações quando um consultor adiciona uma resposta ao ticket.
+    Endpoint para receber notificações quando um consultor GLPI adiciona uma resposta ao ticket.
     Este é o endpoint principal para capturar respostas do GLPI e enviar de volta para a plataforma.
     """
     try:
@@ -504,7 +619,7 @@ async def handle_followup_added(request: Request):
                 "ticket_details": ticket_details
             }
             
-            # Aqui você deve implementar a lógica para enviar a resposta de volta para sua plataforma
+            # TODO: implementar a lógica para enviar a resposta de volta para sua plataforma
             # Por exemplo:
             # - Enviar para API da plataforma usando o external_id
             # - Publicar em uma fila de mensagens
@@ -525,6 +640,110 @@ async def handle_followup_added(request: Request):
     except Exception as e:
         logger.error(f"Erro ao processar followup: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao processar followup: {str(e)}")
+
+@app.post("/api/add-message", summary="Adiciona mensagem da plataforma ao ticket do GLPI")
+async def add_message_to_ticket(request: Request):
+    """
+    Endpoint para adicionar mensagens da plataforma ao ticket do GLPI.
+    
+    Quando o usuário envia uma nova mensagem na plataforma, este endpoint
+    busca o ticket pelo external_id ou ticket_id e adiciona a mensagem como followup.
+    
+    Payload esperado:
+    {
+        "external_id": "CONV-12345",  // OU
+        "ticket_id": 20,              // Usar um dos dois
+        "message": "Mensagem do usuário",
+        "user_name": "Nome do Usuário" (opcional)
+    }
+    """
+    try:
+        # Captura o payload
+        payload = await request.json()
+        logger.info(f"Recebida requisição para adicionar mensagem: {payload}")
+        
+        external_id = payload.get('external_id')
+        ticket_id = payload.get('ticket_id')
+        message = payload.get('message')
+        user_name = payload.get('user_name', 'Usuário')
+        
+        # Valida que pelo menos um identificador foi fornecido
+        if not external_id and not ticket_id:
+            raise HTTPException(
+                status_code=400, 
+                detail="external_id ou ticket_id é obrigatório"
+            )
+        
+        if not message:
+            raise HTTPException(status_code=400, detail="message é obrigatório")
+        
+        # Inicializa sessão com o GLPI
+        session_token = init_glpi_session()
+        if not session_token:
+            logger.error("Falha ao iniciar sessão com o GLPI")
+            raise HTTPException(status_code=500, detail="Falha ao conectar ao GLPI")
+        
+        try:
+            # Busca o ticket pelo external_id ou ticket_id
+            if ticket_id:
+                # Busca diretamente pelo ID
+                logger.info(f"Buscando ticket pelo ID: {ticket_id}")
+                ticket_details = search_ticket_by_id(ticket_id, session_token)
+                if not ticket_details:
+                    raise HTTPException(
+                        status_code=404, 
+                        detail=f"Ticket não encontrado com ID: {ticket_id}"
+                    )
+                # Pega o external_id se existir
+                external_id = ticket_details.get('externalid') or ticket_details.get('external_id')
+            else:
+                # Busca pelo external_id
+                logger.info(f"Buscando ticket pelo external_id: {external_id}")
+                ticket_id = search_ticket_by_external_id(external_id, session_token)
+                if not ticket_id:
+                    raise HTTPException(
+                        status_code=404, 
+                        detail=f"Ticket não encontrado com external_id: {external_id}"
+                    )
+            
+            logger.info(f"Ticket encontrado: ID {ticket_id}")
+            
+            # Formata a mensagem com o nome do usuário
+            formatted_message = f"<strong>{user_name}:</strong><br>{message}"
+            
+            # Adiciona o followup ao ticket
+            result = add_followup_to_ticket(
+                ticket_id=ticket_id,
+                content=formatted_message,
+                session_token=session_token,
+                is_private=0  # Público
+            )
+            
+            if not result:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Falha ao adicionar mensagem ao ticket"
+                )
+            
+            logger.info(f"Mensagem adicionada ao ticket {ticket_id} com sucesso")
+            
+            return {
+                "status": "success",
+                "message": "Mensagem adicionada ao ticket com sucesso",
+                "ticket_id": ticket_id,
+                "external_id": external_id,
+                "followup_id": result.get('id')
+            }
+            
+        finally:
+            # Finaliza a sessão com o GLPI
+            kill_glpi_session(session_token)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao adicionar mensagem ao ticket: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
 
 @app.post("/webhook/debug", summary="Endpoint de debug para capturar qualquer payload")
 async def debug_webhook(request: Request):
