@@ -3,8 +3,12 @@
 ## Visão Geral do Fluxo
 
 ```
-PLATAFORMA → GLPI → CONSULTOR → GLPI → PLATAFORMA
+PLATAFORMA ⇄ GLPI ⇄ CONSULTOR
 ```
+
+### Fluxo bidirecional:
+- **Plataforma → GLPI**: Mensagens do usuário são adicionadas ao ticket
+- **GLPI → Plataforma**: Respostas do consultor são enviadas de volta
 
 ## Fluxo Detalhado
 
@@ -46,7 +50,36 @@ response = requests.post(
 glpi_ticket_id = response.json()['id']
 ```
 
-### 2. Consultor responde no GLPI
+### 2. Usuário envia mais mensagens na Plataforma
+
+**Ação**: Usuário continua a conversa enviando mais mensagens
+
+**O que fazer**: Adicionar mensagens como followups no ticket existente
+
+```python
+import requests
+
+# Quando usuário envia nova mensagem na mesma conversa
+conversation_id = "CONV-12345"  # Mesmo ID da conversa
+new_message = "Ainda estou com o problema"
+user_name = "João Silva"
+
+# Adiciona mensagem ao ticket existente
+response = requests.post(
+    "http://localhost:8000/api/add-message",
+    json={
+        "external_id": conversation_id,
+        "message": new_message,
+        "user_name": user_name
+    }
+)
+
+if response.status_code == 200:
+    result = response.json()
+    print(f"Mensagem adicionada ao ticket {result['ticket_id']}")
+```
+
+### 3. Consultor responde no GLPI
 
 **Ação**: Consultor adiciona uma resposta (followup) no ticket
 
@@ -54,7 +87,7 @@ glpi_ticket_id = response.json()['id']
 
 **Webhook acionado**: `POST /webhook/followup-added`
 
-### 3. Webhook captura a resposta e envia para a Plataforma
+### 4. Webhook captura a resposta e envia para a Plataforma
 
 **Payload recebido do GLPI**:
 ```json
@@ -74,6 +107,50 @@ glpi_ticket_id = response.json()['id']
 1. Extrai o `items_id` (ID do ticket)
 2. Busca o ticket no GLPI para obter o `externalid`
 3. Envia a resposta de volta para a plataforma usando o `externalid`
+
+## Endpoints da API
+
+### POST /api/add-message
+
+Adiciona uma mensagem da plataforma ao ticket do GLPI.
+
+**Uso**: Quando o usuário envia uma nova mensagem na plataforma
+
+**Payload (opção 1 - com external_id)**:
+```json
+{
+  "external_id": "CONV-12345",
+  "message": "Mensagem do usuário",
+  "user_name": "Nome do Usuário"
+}
+```
+
+**Payload (opção 2 - com ticket_id)**:
+```json
+{
+  "ticket_id": 20,
+  "message": "Mensagem do usuário",
+  "user_name": "Nome do Usuário"
+}
+```
+
+**Nota**: Você pode usar `external_id` OU `ticket_id`. Se ambos forem fornecidos, `ticket_id` terá prioridade.
+
+**Resposta de sucesso**:
+```json
+{
+  "status": "success",
+  "message": "Mensagem adicionada ao ticket com sucesso",
+  "ticket_id": 456,
+  "external_id": "CONV-12345",
+  "followup_id": 789
+}
+```
+
+**Erros**:
+- `400`: external_id/ticket_id ou message não fornecidos
+- `404`: Ticket não encontrado com o external_id ou ticket_id fornecido
+- `500`: Erro ao conectar ao GLPI ou adicionar mensagem
 
 ## Configuração dos Webhooks no GLPI
 
@@ -191,20 +268,34 @@ function plugin_webhook_item_add_itilfollowup($item) {
 
 ## Fluxo Completo de Dados
 
-### 1. Criação do Ticket
+### 1. Criação do Ticket (Primeira mensagem do usuário)
 
 ```
-Plataforma (CONV-12345)
+Plataforma (Usuário: "Preciso de ajuda")
     ↓
     [API POST] Cria ticket com externalid='CONV-12345'
     ↓
-GLPI (Ticket #456 criado)
+GLPI (Ticket #456 criado com external_id='CONV-12345')
 ```
 
-### 2. Resposta do Consultor
+### 2. Usuário envia mais mensagens
 
 ```
-GLPI (Consultor adiciona followup no Ticket #456)
+Plataforma (Usuário: "Ainda estou com problema")
+    ↓
+    [API POST] /api/add-message
+    ↓
+Webhook busca ticket por externalid='CONV-12345' → encontra Ticket #456
+    ↓
+    [API POST] Adiciona followup ao Ticket #456
+    ↓
+GLPI (Followup adicionado ao Ticket #456)
+```
+
+### 3. Resposta do Consultor
+
+```
+GLPI (Consultor adiciona followup no Ticket #456: "Vou ajudá-lo")
     ↓
     [Webhook POST] /webhook/followup-added
     ↓
@@ -215,6 +306,13 @@ Webhook busca ticket #456 → encontra externalid='CONV-12345'
 Plataforma (Usuário recebe resposta na conversa CONV-12345)
 ```
 
+### 4. Conversa continua (ciclo se repete)
+
+```
+Plataforma → GLPI (mensagens do usuário via /api/add-message)
+GLPI → Plataforma (respostas do consultor via /webhook/followup-added)
+```
+
 ## Testando o Fluxo
 
 ### 1. Teste de criação de ticket
@@ -223,7 +321,84 @@ Plataforma (Usuário recebe resposta na conversa CONV-12345)
 python create_ticket_with_external_id.py
 ```
 
-### 2. Teste de recebimento de followup
+### 2. Teste de adição de mensagem
+
+**Usando o script Python:**
+
+```bash
+python add_message_example.py
+```
+
+**Usando curl (com external_id):**
+
+```bash
+# Adicionar uma mensagem ao ticket usando external_id
+curl -X POST http://localhost:8000/api/add-message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "external_id": "CONV-12345",
+    "message": "Esta é uma mensagem de teste",
+    "user_name": "João Silva"
+  }'
+```
+
+**Usando curl (com ticket_id):**
+
+```bash
+# Adicionar uma mensagem ao ticket usando ticket_id
+curl -X POST http://localhost:8000/api/add-message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ticket_id": 20,
+    "message": "Esta é uma mensagem de teste",
+    "user_name": "João Silva"
+  }'
+```
+
+**Resposta de sucesso:**
+
+```json
+{
+  "status": "success",
+  "message": "Mensagem adicionada ao ticket com sucesso",
+  "ticket_id": 20,
+  "external_id": "CONV-12345",
+  "followup_id": 28
+}
+```
+
+**Exemplo de múltiplas mensagens:**
+
+```bash
+# Primeira mensagem adicional
+curl -X POST http://localhost:8000/api/add-message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "external_id": "CONV-12345",
+    "message": "Ainda estou com o problema. Pode me ajudar?",
+    "user_name": "João Silva"
+  }'
+
+# Segunda mensagem adicional
+curl -X POST http://localhost:8000/api/add-message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "external_id": "CONV-12345",
+    "message": "O erro que aparece é: Conexão recusada",
+    "user_name": "João Silva"
+  }'
+
+# Terceira mensagem adicional
+curl -X POST http://localhost:8000/api/add-message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "external_id": "CONV-12345",
+    "message": "Isso acontece desde ontem às 14h",
+    "user_name": "João Silva"
+  }'
+```
+
+### 3. Teste de recebimento de followup
 
 ```bash
 # Simula um followup do GLPI
@@ -245,8 +420,20 @@ curl -X POST http://localhost:8000/webhook/followup-added \
 
 1. **Configure o webhook no GLPI** para o evento `ITILFollowup` → `Add`
 2. **Implemente a função `send_response_to_platform`** com a API da sua plataforma
-3. **Teste o fluxo completo**:
+3. **Integre o endpoint `/api/add-message` na sua plataforma**:
+   - Quando usuário enviar mensagem, chame este endpoint
+   - Use o ID da conversa como `external_id`
+4. **Teste o fluxo completo**:
    - Crie um ticket via API com `externalid`
+   - Envie mensagens adicionais via `/api/add-message`
    - Adicione uma resposta no GLPI
    - Verifique se a resposta chegou na sua plataforma
-4. **Adicione tratamento de erros** e retry logic se necessário
+5. **Adicione tratamento de erros** e retry logic se necessário
+
+## Resumo dos Endpoints
+
+| Endpoint | Método | Uso | Direção |
+|----------|--------|-----|---------|
+| `/api/add-message` | POST | Adicionar mensagens do usuário ao ticket | Plataforma → GLPI |
+| `/webhook/followup-added` | POST | Receber respostas do consultor | GLPI → Plataforma |
+| `/webhook/ticket-closed` | POST | Notificar ticket fechado | GLPI → Plataforma |
