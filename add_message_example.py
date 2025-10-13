@@ -57,7 +57,7 @@ def main():
     
     # Exemplo 1: Primeira mensagem do usuário (cria o ticket)
     print("\n1. Simulando criação de ticket...")
-    external_id = "CONV-12345"
+    external_id = "CONV-1133"
     
     # Aqui você criaria o ticket no GLPI com external_id
     # (usando o código de create_ticket_with_external_id.py)
