@@ -15,6 +15,13 @@ GLPI_BASE_URL = os.getenv("GLPI_BASE_URL", "http://localhost:8080/apirest.php")
 GLPI_USER_TOKEN = os.getenv("USER_TOKEN", "")
 GLPI_APP_TOKEN = os.getenv("APP_TOKEN", "")
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE")
+# UUID_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+SSE_BASE_URL = os.environ.get('SSE_BASE_URL', 'https://sse.chatevolux.com.br')
+
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -536,27 +543,6 @@ async def health_check():
     Endpoint de health check para verificar se o serviço está ativo.
     """
     return {"status": "healthy", "service": "GLPI Ticket Webhook"}
-
-# @app.post("/webhook/ticket-updated", summary="Endpoint para tickets atualizados")
-# async def handle_ticket_updated(request: Request):
-#     """
-#     Endpoint para receber notificações de atualização de tickets do GLPI.
-#     """
-#     try:
-#         payload = await request.json()
-#         logger.info(f"Ticket atualizado recebido: {payload}")
-        
-#         # Processar a atualização do ticket
-#         # Implemente sua lógica aqui
-        
-#         return {
-#             "status": "success",
-#             "message": "Atualização de ticket recebida e processada",
-#             "data": payload
-#         }
-#     except Exception as e:
-#         logger.error(f"Erro ao processar atualização de ticket: {str(e)}")
-#         raise HTTPException(status_code=500, detail=f"Erro ao processar atualização: {str(e)}")
 
 @app.post("/webhook/followup-added", summary="Endpoint para novas respostas do consultor GLPI")
 async def handle_followup_added(request: Request):

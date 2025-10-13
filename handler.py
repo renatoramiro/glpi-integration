@@ -118,10 +118,10 @@ def main():
         
         # Cria um ticket de exemplo com histórico de conversa
         ticket_data = {
-            'name': 'Ticket criado via API REST (1)',
+            'name': 'Ticket criado via API REST (2)',
             'content': 'Este é um ticket de teste criado usando requisições REST diretas.',
             'entities_id': 0,  # Entidade raiz
-            'externalid': 'CONV-12345',
+            'externalid': 'CONV-1133',
         }
         
         # Exemplo de histórico de conversa
