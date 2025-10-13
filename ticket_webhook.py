@@ -1,11 +1,24 @@
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
-import json
+import os
 import logging
 import requests
-import os
+from datetime import datetime
+from pydantic import BaseModel
 from dotenv import load_dotenv
+from supabase import create_client
+from typing import Optional, Dict, Any
+from fastapi import FastAPI, HTTPException, Request
+
+from glpi_helpers import (init_glpi_session,
+                        kill_glpi_session,
+                        get_ticket_details,
+                        get_user_details,
+                        get_ticket_followups,
+                        get_ticket_solution,
+                        create_ticket_in_glpi,
+                        add_followup_to_ticket,
+                        search_ticket_by_id,
+                        search_ticket_by_external_id)
+from supabase_helpers import load_chat_data, supabase
 
 # Carrega variáveis de ambiente
 load_dotenv()
@@ -26,253 +39,19 @@ SSE_BASE_URL = os.environ.get('SSE_BASE_URL', 'https://sse.chatevolux.com.br')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="GLPI Ticket Webhook", description="Webhook para receber notificações de tickets fechados no GLPI")
-
-def init_glpi_session():
-    """
-    Inicializa uma sessão com o GLPI
-    """
-    url = f"{GLPI_BASE_URL}/initSession"
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'user_token {GLPI_USER_TOKEN}',
-        'App-Token': GLPI_APP_TOKEN
-    }
-    
+# Inicializa o Supabase apenas se as variáveis estiverem configuradas
+supabase = None
+if SUPABASE_URL and SUPABASE_KEY:
     try:
-        response = requests.get(url, headers=headers, verify=False)
-        if response.status_code == 200:
-            return response.json()['session_token']
-        else:
-            logger.error(f"Falha ao iniciar sessão GLPI: {response.status_code} - {response.text}")
-            return None
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("Cliente Supabase inicializado com sucesso")
     except Exception as e:
-        logger.error(f"Erro ao iniciar sessão GLPI: {str(e)}")
-        return None
+        logger.error(f"Erro ao inicializar Supabase: {str(e)}")
+        supabase = None
+else:
+    logger.warning("Variáveis do Supabase não configuradas. Funcionalidade de histórico não estará disponível.")
 
-def get_ticket_details(ticket_id: int, session_token: str):
-    """
-    Obtém os detalhes de um ticket específico
-    """
-    url = f"{GLPI_BASE_URL}/Ticket/{ticket_id}"
-    headers = {
-        'Content-Type': 'application/json',
-        'Session-Token': session_token,
-        'App-Token': GLPI_APP_TOKEN
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, verify=False)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.error(f"Falha ao obter detalhes do ticket {ticket_id}: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        logger.error(f"Erro ao obter detalhes do ticket {ticket_id}: {str(e)}")
-        return None
-
-def get_user_details(user_id: int, session_token: str):
-    """
-    Obtém os detalhes de um usuário específico
-    """
-    if not user_id or user_id <= 0:
-        return None
-        
-    url = f"{GLPI_BASE_URL}/User/{user_id}"
-    headers = {
-        'Content-Type': 'application/json',
-        'Session-Token': session_token,
-        'App-Token': GLPI_APP_TOKEN
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, verify=False)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.error(f"Falha ao obter detalhes do usuário {user_id}: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        logger.error(f"Erro ao obter detalhes do usuário {user_id}: {str(e)}")
-        return None
-
-def get_ticket_followups(ticket_id: int, session_token: str):
-    """
-    Obtém os followups (observações) de um ticket específico
-    """
-    url = f"{GLPI_BASE_URL}/Ticket/{ticket_id}/ITILFollowup"
-    headers = {
-        'Content-Type': 'application/json',
-        'Session-Token': session_token,
-        'App-Token': GLPI_APP_TOKEN
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, verify=False)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.error(f"Falha ao obter followups do ticket {ticket_id}: {response.status_code} - {response.text}")
-            return []
-    except Exception as e:
-        logger.error(f"Erro ao obter followups do ticket {ticket_id}: {str(e)}")
-        return []
-
-def get_ticket_solution(ticket_id: int, session_token: str):
-    """
-    Obtém a solução de um ticket específico
-    """
-    url = f"{GLPI_BASE_URL}/Ticket/{ticket_id}/ITILSolution"
-    headers = {
-        'Content-Type': 'application/json',
-        'Session-Token': session_token,
-        'App-Token': GLPI_APP_TOKEN
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, verify=False)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.error(f"Falha ao obter solução do ticket {ticket_id}: {response.status_code} - {response.text}")
-            return []
-    except Exception as e:
-        logger.error(f"Erro ao obter solução do ticket {ticket_id}: {str(e)}")
-        return []
-
-def kill_glpi_session(session_token: str):
-    """
-    Finaliza a sessão com o GLPI
-    """
-    url = f"{GLPI_BASE_URL}/killSession"
-    headers = {
-        'Content-Type': 'application/json',
-        'Session-Token': session_token,
-        'App-Token': GLPI_APP_TOKEN
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, verify=False)
-        return response.status_code == 200
-    except Exception as e:
-        logger.error(f"Erro ao finalizar sessão GLPI: {str(e)}")
-        return False
-
-def add_followup_to_ticket(ticket_id: int, content: str, session_token: str, is_private: int = 0):
-    """
-    Adiciona um followup (observação/mensagem) a um ticket.
-    
-    Args:
-        ticket_id: ID do ticket no GLPI
-        content: Conteúdo da mensagem
-        session_token: Token da sessão
-        is_private: 0 = público, 1 = privado
-    
-    Returns:
-        Dicionário com informações do followup criado
-    """
-    url = f"{GLPI_BASE_URL}/Ticket/{ticket_id}/ITILFollowup"
-    headers = {
-        'Content-Type': 'application/json',
-        'Session-Token': session_token,
-        'App-Token': GLPI_APP_TOKEN
-    }
-    
-    followup_data = {
-        "itemtype":"Ticket",
-        "items_id": ticket_id,
-        'content': content,
-        'is_private': is_private
-    }
-    
-    payload = {
-        'input': followup_data
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload, verify=False)
-        if response.status_code in [200, 201]:
-            return response.json()
-        else:
-            logger.error(f"Falha ao adicionar followup ao ticket {ticket_id}: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        logger.error(f"Erro ao adicionar followup ao ticket {ticket_id}: {str(e)}")
-        return None
-
-def search_ticket_by_id(ticket_id: int, session_token: str):
-    """
-    Busca um ticket pelo ID.
-    
-    Args:
-        ticket_id: ID do ticket no GLPI
-        session_token: Token da sessão
-    
-    Returns:
-        Dados do ticket se encontrado, None caso contrário
-    """
-    try:
-        ticket_details = get_ticket_details(ticket_id, session_token)
-        if ticket_details:
-            return ticket_details
-        else:
-            logger.warning(f"Ticket {ticket_id} não encontrado")
-            return None
-    except Exception as e:
-        logger.error(f"Erro ao buscar ticket {ticket_id}: {str(e)}")
-        return None
-
-def search_ticket_by_external_id(external_id: str, session_token: str):
-    """
-    Busca um ticket pelo ID externo.
-    
-    Args:
-        external_id: ID externo do ticket
-        session_token: Token da sessão
-    
-    Returns:
-        ID do ticket se encontrado, None caso contrário
-    """
-    # Abordagem alternativa: buscar tickets recentes e filtrar pelo externalid
-    url = f"{GLPI_BASE_URL}/Ticket"
-    headers = {
-        'Content-Type': 'application/json',
-        'Session-Token': session_token,
-        'App-Token': GLPI_APP_TOKEN
-    }
-    
-    # Busca os últimos 100 tickets
-    params = {
-        'range': '0-99',
-        'order': 'DESC',
-        'sort': 'id'
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, params=params, verify=False)
-        if response.status_code == 200:
-            tickets = response.json()
-            logger.info(f"Buscando entre {len(tickets)} tickets...")
-            
-            # Filtra pelo externalid
-            for ticket in tickets:
-                ticket_externalid = ticket.get('externalid') or ticket.get('external_id')
-                logger.debug(f"Ticket {ticket['id']}: externalid = {ticket_externalid}")
-                
-                if ticket_externalid == external_id:
-                    logger.info(f"Ticket encontrado: ID {ticket['id']} com external_id {external_id}")
-                    return ticket['id']
-            
-            logger.warning(f"Nenhum ticket encontrado com external_id: {external_id}")
-            logger.info(f"Dica: Verifique se o ticket foi criado com o campo 'externalid' correto")
-            return None
-        else:
-            logger.error(f"Falha ao buscar tickets: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        logger.error(f"Erro ao buscar ticket por external_id: {str(e)}")
-        return None
+app = FastAPI(title="GLPI Ticket Webhook", description="Webhook para receber notificações de tickets fechados no GLPI") 
 
 class TicketClosedPayload(BaseModel):
     """Modelo para o payload de ticket fechado"""
@@ -296,6 +75,148 @@ class TicketClosedPayload(BaseModel):
     # Permite campos extras
     class Config:
         extra = "allow"
+
+class CreateTicketPayload(BaseModel):
+    """Modelo para o payload de criação de ticket"""
+    external_id: str
+    title: str
+    entity_id: Optional[int] = 0
+    user_chat_id: Optional[str] = None  # ID do chat para carregar histórico
+    conversation_history: Optional[list] = None
+    # Permite campos extras
+    class Config:
+        extra = "allow"
+
+@app.post("/api/create-ticket", summary="Cria um novo ticket no GLPI")
+async def create_ticket(request: Request):
+    """
+    Endpoint para criar um novo ticket no GLPI a partir de um ID da plataforma.
+    
+    Payload esperado (campos obrigatórios marcados com *):
+    {
+        "user_chat_id": "chat-12345",  // ID do chat para carregar titulo e histórico de mensagens
+    }
+    
+    Pelo menos um dos seguintes conjuntos deve ser fornecido:
+    - user_chat_id (para carregar title e histórico de mensagens)
+    """
+
+    try:
+        # Captura o payload
+        payload = await request.json()
+        logger.info(f"Recebida requisição para criar ticket: {payload}")
+        
+        # Verifica se temos user_chat_id
+        user_chat_id = payload.get('user_chat_id')
+        
+        if user_chat_id:
+            logger.info(f"Carregando informações para user_chat_id: {user_chat_id}")
+            
+            # Verifica se o Supabase está disponível
+            if not supabase:
+                logger.error("Cliente Supabase não está inicializado. Configure SUPABASE_URL e SUPABASE_KEY no .env")
+                raise HTTPException(status_code=500, detail="Serviço Supabase não configurado")
+            else:
+                try:
+                    # Faz a consulta ao Supabase
+                    logger.info("Executando consulta ao Supabase...")
+
+                    # Busca o chat_info
+                    chat_info = supabase.table("chats").select("*").eq("idchat", user_chat_id).single().execute()
+                    title = chat_info.data.get('title')
+
+                    # Busca o histórico de mensagens
+                    query = supabase.table("messages").select("*").eq("idchat", user_chat_id).order("createat")
+                    result = query.execute()
+                    
+                    # Verifica o tipo do resultado antes de acessar atributos
+                    messages = []
+                    if hasattr(result, 'data') and isinstance(result.data, list):
+                        messages = result.data
+                    elif isinstance(result, list):
+                        messages = result
+                    else:
+                        logger.warning(f"Formato de resposta inesperado do Supabase: {type(result)}")
+                    
+                    logger.info(f"Encontradas {len(messages)} mensagens no histórico")
+                    
+                    # Formata as mensagens para o padrão de conversation_history
+                    conversation_history = []
+                    for msg in messages:
+                        if isinstance(msg, dict):
+                            speaker = "Cliente" if msg.get('author') == 'user' else "Eva"
+                            content_msg = msg.get('text', '')
+                            if not isinstance(content_msg, str):
+                                content_msg = str(content_msg)
+                            conversation_history.append({
+                                "speaker": speaker,
+                                "message": content_msg
+                            })
+                
+                    logger.info(f"Histórico formatado com {len(conversation_history)} mensagens")
+                    
+                except Exception as e:
+                    logger.error(f"Erro ao carregar informações do Supabase: {str(e)}")
+                    logger.error("Verifique se as variáveis SUPABASE_URL e SUPABASE_KEY estão corretas")
+                    raise HTTPException(status_code=500, detail=f"Erro ao carregar informações do chat: {str(e)}")
+        
+        # Valida que temos os dados necessários
+        if not title:
+            title = f"Ticket criado via plataforma Evolux {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+        
+        # Valida o payload usando o modelo Pydantic
+        ticket_data = CreateTicketPayload(
+            external_id=user_chat_id,
+            title=title,
+            entity_id=payload.get('entity_id', None),
+            user_chat_id=user_chat_id,
+            conversation_history=conversation_history
+        )
+        
+        # Inicializa sessão com o GLPI
+        session_token = init_glpi_session()
+        if not session_token:
+            logger.error("Falha ao iniciar sessão com o GLPI")
+            raise HTTPException(status_code=500, detail="Falha ao conectar ao GLPI")
+        
+        try:
+            # Cria o ticket no GLPI
+            result = create_ticket_in_glpi(
+                title=ticket_data.title,
+                external_id=ticket_data.external_id,
+                session_token=session_token,
+                entity_id=ticket_data.entity_id or 0,
+                conversation_history=conversation_history
+            )
+            
+            if not result:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Falha ao criar ticket no GLPI"
+                )
+            
+            ticket_id = result.get('id')
+            logger.info(f"Ticket criado com sucesso: ID {ticket_id}")
+            
+            return {
+                "status": "success",
+                "message": "Ticket criado com sucesso",
+                "ticket_id": ticket_id,
+                "external_id": ticket_data.external_id,
+                "user_chat_id": user_chat_id,
+                "glpi_response": result
+            }
+            
+        finally:
+            # Finaliza a sessão com o GLPI
+            kill_glpi_session(session_token)
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao criar ticket: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao criar ticket: {str(e)}")
 
 @app.post("/webhook/ticket-closed", summary="Endpoint para tickets fechados")
 async def handle_ticket_closed(request: Request):
