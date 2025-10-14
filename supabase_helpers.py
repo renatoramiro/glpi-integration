@@ -127,7 +127,8 @@ def load_chat_data(user_chat_id: str) -> Dict[str, Any]:
     """
     result = {
         'title': None,
-        'conversation_history': []
+        'conversation_history': [],
+        'ticket_id': None
     }
     
     if not supabase:
@@ -139,6 +140,7 @@ def load_chat_data(user_chat_id: str) -> Dict[str, Any]:
         chat_info = get_chat_info(user_chat_id)
         if chat_info:
             result['title'] = chat_info.get('title')
+            result['ticket_id'] = chat_info.get('ticket_id')
         
         # Busca mensagens do chat
         messages = get_chat_messages(user_chat_id)
@@ -152,3 +154,33 @@ def load_chat_data(user_chat_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Erro ao carregar dados do chat {user_chat_id}: {str(e)}")
         return result
+
+
+def update_chat_ticket_id(user_chat_id: str, ticket_id: int) -> bool:
+    """
+    Atualiza o ticket_id de um chat no Supabase.
+    
+    Args:
+        user_chat_id: ID do chat
+        ticket_id: ID do ticket no GLPI
+        
+    Returns:
+        True se a atualização foi bem-sucedida, False caso contrário
+    """
+    if not supabase:
+        logger.error("Cliente Supabase não está inicializado")
+        return False
+    
+    try:
+        # Atualiza o ticket_id do chat
+        result = supabase.table("chats").update({"ticket_id": ticket_id}).eq("idchat", user_chat_id).execute()
+        
+        if result:
+            logger.info(f"ticket_id {ticket_id} atualizado com sucesso para o chat {user_chat_id}")
+            return True
+        else:
+            logger.error(f"Falha ao atualizar ticket_id para o chat {user_chat_id}")
+            return False
+    except Exception as e:
+        logger.error(f"Erro ao atualizar ticket_id do chat {user_chat_id}: {str(e)}")
+        return False

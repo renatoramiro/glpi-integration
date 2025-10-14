@@ -16,7 +16,7 @@ from glpi_helpers import (init_glpi_session,
                         add_followup_to_ticket,
                         search_ticket_by_id,
                         search_ticket_by_external_id)
-from supabase_helpers import load_chat_data, supabase
+from supabase_helpers import load_chat_data, supabase, update_chat_ticket_id
 
 load_dotenv()
 
@@ -64,6 +64,7 @@ class CreateTicketPayload(BaseModel):
     external_id: str
     title: str
     entity_id: Optional[int] = 0
+    ticket_id: Optional[int] = 0
     user_chat_id: Optional[str] = None  # ID do chat para carregar histórico
     conversation_history: Optional[list] = None
     # Permite campos extras
@@ -93,6 +94,7 @@ async def create_ticket(request: Request):
         user_chat_id = payload.get('user_chat_id')
         title = None
         conversation_history = None
+        ticket_id = None
         
         if user_chat_id:
             logger.info(f"Carregando informações para user_chat_id: {user_chat_id}")
@@ -106,6 +108,7 @@ async def create_ticket(request: Request):
                     # Carrega dados do chat usando a função auxiliar
                     chat_data = load_chat_data(user_chat_id)
                     title = chat_data.get('title')
+                    ticket_id = chat_data.get('ticket_id')
                     conversation_history = chat_data.get('conversation_history', [])
                     
                 except Exception as e:
@@ -116,12 +119,17 @@ async def create_ticket(request: Request):
         # Valida que temos os dados necessários
         if not title:
             title = f"Ticket criado via plataforma Evolux {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+
+        if ticket_id and ticket_id != 0:
+            # retornar erro, pois para criar um ticket no GLPI, o ticket_id deve ser None ou 0
+            raise HTTPException(status_code=400, detail="Já existe um ticket associado a este chat.")
         
         # Valida o payload usando o modelo Pydantic
         ticket_data = CreateTicketPayload(
             external_id=user_chat_id or payload.get('external_id', ''),
             title=title,
             entity_id=payload.get('entity_id', None),
+            ticket_id=ticket_id,
             user_chat_id=user_chat_id,
             conversation_history=conversation_history
         )
@@ -148,13 +156,21 @@ async def create_ticket(request: Request):
                     detail="Falha ao criar ticket no GLPI"
                 )
             
-            ticket_id = result.get('id')
-            logger.info(f"Ticket criado com sucesso: ID {ticket_id}")
+            remote_ticket_id = result.get('id')
+            logger.info(f"Ticket criado com sucesso: ID {remote_ticket_id}")
+
+            # Atualiza o ticket_id do chat no Supabase
+            if user_chat_id and remote_ticket_id:
+                update_success = update_chat_ticket_id(user_chat_id, remote_ticket_id)
+                if update_success:
+                    logger.info(f"ticket_id {remote_ticket_id} atualizado com sucesso no chat {user_chat_id}")
+                else:
+                    logger.error(f"Falha ao atualizar ticket_id no chat {user_chat_id}")
             
             return {
                 "status": "success",
                 "message": "Ticket criado com sucesso",
-                "ticket_id": ticket_id,
+                "ticket_id": remote_ticket_id,
                 "external_id": ticket_data.external_id,
                 "user_chat_id": user_chat_id,
                 "glpi_response": result

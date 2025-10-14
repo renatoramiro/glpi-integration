@@ -21,7 +21,8 @@ class TestCreateTicket:
     @patch('ticket_webhook.create_ticket_in_glpi')
     @patch('ticket_webhook.load_chat_data')
     @patch('ticket_webhook.supabase')
-    def test_create_ticket_success_with_chat_id(self, mock_supabase, mock_load_chat, mock_create, mock_kill, mock_init):
+    @patch('ticket_webhook.update_chat_ticket_id')
+    def test_create_ticket_success_with_chat_id(self, mock_update_chat, mock_supabase, mock_load_chat, mock_create, mock_kill, mock_init):
         """Testa criação de ticket com user_chat_id"""
         # Setup mocks
         mock_init.return_value = "session_token"
@@ -31,6 +32,7 @@ class TestCreateTicket:
         }
         mock_create.return_value = {'id': 123}
         mock_supabase.return_value = True
+        mock_update_chat.return_value = True
         
         payload = {
             "user_chat_id": "chat-12345",
@@ -48,11 +50,13 @@ class TestCreateTicket:
         mock_init.assert_called_once()
         mock_create.assert_called_once()
         mock_kill.assert_called_once()
+        mock_update_chat.assert_called_once_with("chat-12345", 123)
 
     @patch('ticket_webhook.init_glpi_session')
     @patch('ticket_webhook.kill_glpi_session')
     @patch('ticket_webhook.create_ticket_in_glpi')
-    def test_create_ticket_without_chat_id(self, mock_create, mock_kill, mock_init):
+    @patch('ticket_webhook.update_chat_ticket_id')
+    def test_create_ticket_without_chat_id(self, mock_update_chat, mock_create, mock_kill, mock_init):
         """Testa criação de ticket sem user_chat_id (usa título padrão)"""
         mock_init.return_value = "session_token"
         mock_create.return_value = {'id': 456}
@@ -65,6 +69,9 @@ class TestCreateTicket:
         data = response.json()
         assert data["status"] == "success"
         assert data["ticket_id"] == 456
+        
+        # Verifica que update_chat_ticket_id não foi chamado quando não há user_chat_id
+        mock_update_chat.assert_not_called()
 
     @patch('ticket_webhook.supabase', None)
     def test_create_ticket_supabase_not_configured(self):
@@ -75,6 +82,40 @@ class TestCreateTicket:
         
         assert response.status_code == 500
         assert "Serviço Supabase não configurado" in response.json()["detail"]
+
+    @patch('ticket_webhook.init_glpi_session')
+    @patch('ticket_webhook.kill_glpi_session')
+    @patch('ticket_webhook.create_ticket_in_glpi')
+    @patch('ticket_webhook.load_chat_data')
+    @patch('ticket_webhook.supabase')
+    @patch('ticket_webhook.update_chat_ticket_id')
+    def test_create_ticket_update_chat_ticket_id_failure(self, mock_update_chat, mock_supabase, mock_load_chat, mock_create, mock_kill, mock_init):
+        """Testa criação de ticket quando a atualização do ticket_id no chat falha"""
+        # Setup mocks
+        mock_init.return_value = "session_token"
+        mock_load_chat.return_value = {
+            'title': 'Test Ticket Title',
+            'conversation_history': [{'msg': 'test'}]
+        }
+        mock_create.return_value = {'id': 123}
+        mock_supabase.return_value = True
+        mock_update_chat.return_value = False  # Simula falha na atualização
+        
+        payload = {
+            "user_chat_id": "chat-12345",
+            "entity_id": 1
+        }
+        
+        response = client.post("/api/create-ticket", json=payload)
+        
+        # A criação do ticket deve ser bem-sucedida mesmo que a atualização do chat falhe
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["ticket_id"] == 123
+        assert data["user_chat_id"] == "chat-12345"
+        
+        mock_update_chat.assert_called_once_with("chat-12345", 123)
 
 class TestTicketClosedWebhook:
     @patch('ticket_webhook.init_glpi_session')
