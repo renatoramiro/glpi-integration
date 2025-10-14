@@ -91,6 +91,8 @@ async def create_ticket(request: Request):
         
         # Verifica se temos user_chat_id
         user_chat_id = payload.get('user_chat_id')
+        title = None
+        conversation_history = None
         
         if user_chat_id:
             logger.info(f"Carregando informações para user_chat_id: {user_chat_id}")
@@ -117,7 +119,7 @@ async def create_ticket(request: Request):
         
         # Valida o payload usando o modelo Pydantic
         ticket_data = CreateTicketPayload(
-            external_id=user_chat_id,
+            external_id=user_chat_id or payload.get('external_id', ''),
             title=title,
             entity_id=payload.get('entity_id', None),
             user_chat_id=user_chat_id,
