@@ -1,10 +1,8 @@
 import os
 import logging
-import requests
 from datetime import datetime
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from supabase import create_client
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Request
 
@@ -20,7 +18,6 @@ from glpi_helpers import (init_glpi_session,
                         search_ticket_by_external_id)
 from supabase_helpers import load_chat_data, supabase
 
-# Carrega variáveis de ambiente
 load_dotenv()
 
 # Configurações do GLPI
@@ -29,8 +26,6 @@ GLPI_USER_TOKEN = os.getenv("USER_TOKEN", "")
 GLPI_APP_TOKEN = os.getenv("APP_TOKEN", "")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE")
 # UUID_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 SSE_BASE_URL = os.environ.get('SSE_BASE_URL', 'https://sse.chatevolux.com.br')
@@ -38,18 +33,6 @@ SSE_BASE_URL = os.environ.get('SSE_BASE_URL', 'https://sse.chatevolux.com.br')
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Inicializa o Supabase apenas se as variáveis estiverem configuradas
-supabase = None
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logger.info("Cliente Supabase inicializado com sucesso")
-    except Exception as e:
-        logger.error(f"Erro ao inicializar Supabase: {str(e)}")
-        supabase = None
-else:
-    logger.warning("Variáveis do Supabase não configuradas. Funcionalidade de histórico não estará disponível.")
 
 app = FastAPI(title="GLPI Ticket Webhook", description="Webhook para receber notificações de tickets fechados no GLPI") 
 
@@ -118,42 +101,10 @@ async def create_ticket(request: Request):
                 raise HTTPException(status_code=500, detail="Serviço Supabase não configurado")
             else:
                 try:
-                    # Faz a consulta ao Supabase
-                    logger.info("Executando consulta ao Supabase...")
-
-                    # Busca o chat_info
-                    chat_info = supabase.table("chats").select("*").eq("idchat", user_chat_id).single().execute()
-                    title = chat_info.data.get('title')
-
-                    # Busca o histórico de mensagens
-                    query = supabase.table("messages").select("*").eq("idchat", user_chat_id).order("createat")
-                    result = query.execute()
-                    
-                    # Verifica o tipo do resultado antes de acessar atributos
-                    messages = []
-                    if hasattr(result, 'data') and isinstance(result.data, list):
-                        messages = result.data
-                    elif isinstance(result, list):
-                        messages = result
-                    else:
-                        logger.warning(f"Formato de resposta inesperado do Supabase: {type(result)}")
-                    
-                    logger.info(f"Encontradas {len(messages)} mensagens no histórico")
-                    
-                    # Formata as mensagens para o padrão de conversation_history
-                    conversation_history = []
-                    for msg in messages:
-                        if isinstance(msg, dict):
-                            speaker = "Cliente" if msg.get('author') == 'user' else "Eva"
-                            content_msg = msg.get('text', '')
-                            if not isinstance(content_msg, str):
-                                content_msg = str(content_msg)
-                            conversation_history.append({
-                                "speaker": speaker,
-                                "message": content_msg
-                            })
-                
-                    logger.info(f"Histórico formatado com {len(conversation_history)} mensagens")
+                    # Carrega dados do chat usando a função auxiliar
+                    chat_data = load_chat_data(user_chat_id)
+                    title = chat_data.get('title')
+                    conversation_history = chat_data.get('conversation_history', [])
                     
                 except Exception as e:
                     logger.error(f"Erro ao carregar informações do Supabase: {str(e)}")
