@@ -120,8 +120,9 @@ async def create_ticket(request: Request):
         if not title:
             title = f"Ticket criado via plataforma Evolux {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
 
-        if ticket_id and ticket_id != 0:
-            # retornar erro, pois para criar um ticket no GLPI, o ticket_id deve ser None ou 0
+        if ticket_id:
+            # retornar erro, pois para criar um ticket no GLPI, o ticket_id deve ser None
+            logger.info(f"Ticket {ticket_id} já existe para este chat {user_chat_id}")
             raise HTTPException(status_code=400, detail="Já existe um ticket associado a este chat.")
         
         # Valida o payload usando o modelo Pydantic
