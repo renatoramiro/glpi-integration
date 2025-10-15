@@ -373,10 +373,10 @@ def send_response_to_platform(response_data: dict):
     # Salva a mensagem no Supabase se encontrou o chat
     if user_chat_id and isinstance(user_chat_id, str) and content:
         # Formata a mensagem com o nome do consultor
-        formatted_message = f"{user_name}: {content}"
+        formatted_message = content
         
         # Salva a mensagem no chat
-        success = save_message_to_chat(user_chat_id, formatted_message, "GLPI")
+        success = save_message_to_chat(user_chat_id, formatted_message, user_name)
         if success:
             logger.info(f"Mensagem salva com sucesso no chat {user_chat_id}")
         else:

@@ -256,7 +256,7 @@ def save_message_to_chat(user_chat_id: str, message: str, author: str = "agent")
             "idchat": user_chat_id,
             "text": message,
             "author": author,
-            "createat": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+            "createat": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "classification_categoria": "",
             "classification_agente": "",
             "classification_palavras_chave": "",
