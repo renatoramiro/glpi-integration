@@ -3,6 +3,8 @@ import logging
 from datetime import datetime
 from pydantic import BaseModel
 from dotenv import load_dotenv
+import logging
+import re
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Request
 
@@ -16,7 +18,8 @@ from glpi_helpers import (init_glpi_session,
                         add_followup_to_ticket,
                         search_ticket_by_id,
                         search_ticket_by_external_id)
-from supabase_helpers import load_chat_data, supabase, update_chat_ticket_id
+from supabase_helpers import (load_chat_data, supabase, update_chat_ticket_id,
+                              get_chat_by_external_id, get_chat_by_ticket_id, save_message_to_chat)
 
 load_dotenv()
 
@@ -325,7 +328,7 @@ async def handle_ticket_closed(request: Request):
         
 def send_response_to_platform(response_data: dict):
     """
-    Envia a resposta do GLPI de volta para a plataforma.
+    Envia a resposta do GLPI de volta para a plataforma e salva no Supabase.
     
     Args:
         response_data: Dicionário com os dados da resposta
@@ -337,13 +340,52 @@ def send_response_to_platform(response_data: dict):
             - date_creation: Data da resposta
     """
     external_id = response_data.get('external_id')
+    ticket_id = response_data.get('ticket_id')
     content = response_data.get('content')
     user_name = response_data.get('user_name')
     
     logger.info(f"Enviando resposta para a plataforma:")
     logger.info(f"  External ID: {external_id}")
+    logger.info(f"  Ticket ID: {ticket_id}")
     logger.info(f"  Consultor: {user_name}")
     logger.info(f"  Conteúdo: {content}")
+    
+    # Busca informações do chat no Supabase
+    chat_info = None
+    user_chat_id = None
+    
+    # Tenta buscar pelo external_id primeiro
+    if external_id:
+        logger.info(f"Buscando chat pelo external_id: {external_id}")
+        chat_info = get_chat_by_external_id(external_id)
+        if chat_info and isinstance(chat_info, dict):
+            user_chat_id = chat_info.get('idchat')
+            logger.info(f"Chat encontrado pelo external_id: {user_chat_id}")
+    
+    # Se não encontrou pelo external_id, tenta pelo ticket_id
+    if not chat_info and ticket_id:
+        logger.info(f"Buscando chat pelo ticket_id: {ticket_id}")
+        chat_info = get_chat_by_ticket_id(ticket_id)
+        if chat_info and isinstance(chat_info, dict):
+            user_chat_id = chat_info.get('idchat')
+            logger.info(f"Chat encontrado pelo ticket_id: {user_chat_id}")
+    
+    # Salva a mensagem no Supabase se encontrou o chat
+    if user_chat_id and isinstance(user_chat_id, str) and content:
+        # Formata a mensagem com o nome do consultor
+        formatted_message = f"{user_name}: {content}"
+        
+        # Salva a mensagem no chat
+        success = save_message_to_chat(user_chat_id, formatted_message, "GLPI")
+        if success:
+            logger.info(f"Mensagem salva com sucesso no chat {user_chat_id}")
+        else:
+            logger.error(f"Falha ao salvar mensagem no chat {user_chat_id}")
+    else:
+        if not user_chat_id:
+            logger.warning("Não foi possível encontrar o chat correspondente. Mensagem não salva no Supabase.")
+        if not content:
+            logger.warning("Conteúdo da mensagem está vazio. Mensagem não salva no Supabase.")
     
     # TODO: Enviar para sua plataforma
     # Exemplo de implementação:
@@ -451,6 +493,10 @@ async def handle_followup_added(request: Request):
         followup_id = followup.get('id')
         ticket_id = followup.get('items_id')  # ID do ticket relacionado
         followup_content = followup.get('content', '')
+        
+        # Remove tags HTML do conteúdo
+        followup_content = re.sub(r'<[^>]+>', '', followup_content).strip()
+        
         user_id = followup.get('users_id')
         date_creation = followup.get('date_creation')
         is_private = followup.get('is_private', 0)
