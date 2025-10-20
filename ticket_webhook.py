@@ -46,8 +46,7 @@ class TicketClosedPayload(BaseModel):
     closed_by: Optional[str] = None
     closed_at: Optional[str] = None
     solution: Optional[str] = None
-    requester_email: Optional[str] = None
-    requester_name: Optional[str] = None
+    external_id: Optional[str] = None
     additional_data: Optional[Dict[str, Any]] = None
     
     # Campos adicionais que o GLPI pode enviar
@@ -57,7 +56,6 @@ class TicketClosedPayload(BaseModel):
     status: Optional[int] = None
     users_id_lastupdater: Optional[int] = None
     date_mod: Optional[str] = None
-    _users_id_requester: Optional[int] = None
     # Permite campos extras
     class Config:
         extra = "allow"
@@ -191,13 +189,14 @@ async def create_ticket(request: Request):
         logger.error(f"Erro ao criar ticket: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao criar ticket: {str(e)}")
 
-@app.post("/webhook/ticket-closed", summary="Endpoint para tickets fechados")
+@app.post("/webhook/ticket-closed", summary="Endpoint para tickets fechados/solucionados")
 async def handle_ticket_closed(request: Request):
     """
-    Endpoint para receber notificações quando um ticket é fechado no GLPI.
+    Endpoint para receber notificações quando um ticket é fechado (status 6) 
+    ou solucionado (status 5) no GLPI.
     
     Este endpoint pode ser configurado como webhook no GLPI para receber
-    notificações em tempo real quando tickets forem fechados.
+    notificações em tempo real quando tickets forem fechados ou solucionados.
     """
     try:
         # Captura o payload bruto
@@ -205,23 +204,16 @@ async def handle_ticket_closed(request: Request):
         logger.info(f"Raw payload recebido: {raw_payload}")
         
         ticket = raw_payload.get('item')
-        
-        # Extrai informações do payload (lidando com diferentes formatos do GLPI)
         ticket_id = ticket.get('id')
-        ticket_name = ticket.get('name') or f"Ticket #{ticket_id}"
-        closed_by = ticket.get('users_id_lastupdater') or "GLPI"
-        closed_at = ticket.get('date_mod') or "Data não informada"
-        solution = raw_payload.get('solution', '')
-        requester_email = raw_payload.get('requester_email', '')
-        requester_name = raw_payload.get('requester_name', '')
         
-        # Verifica se é um ticket fechado (status 6 no GLPI)
+        # Verifica se é um ticket fechado (status 6) ou solucionado (status 5) no GLPI
         status = ticket.get('status')
-        if status is not None and status.get('id') != 6:  # 6 = Fechado no GLPI
-            logger.info(f"Ticket {ticket_id} não está fechado (status: {status}). Ignorando.")
+        status_id = status.get('id') if status is not None else None
+        if status_id is not None and status_id not in [5, 6]:  # 5 = Solucionado, 6 = Fechado no GLPI
+            logger.info(f"Ticket {ticket_id} não está fechado ou solucionado (status: {status}). Ignorando.")
             return {
                 "status": "ignored",
-                "message": f"Ticket {ticket_id} não está fechado",
+                "message": f"Ticket {ticket_id} não está fechado ou solucionado",
                 "ticket_id": ticket_id
             }
         
@@ -236,19 +228,16 @@ async def handle_ticket_closed(request: Request):
             ticket_details = get_ticket_details(ticket_id, session_token)
             if ticket_details:
                 logger.info(f"Detalhes do ticket {ticket_id}: {ticket_details}")
+
+                ticket_name = ticket_details.get('name')
+                closed_at = ticket_details.get('date_mod')
+                external_id = ticket_details.get('externalid')
                 
                 # Obtém informações do usuário que fechou o ticket
                 if ticket_details.get('users_id_lastupdater'):
                     user_details = get_user_details(ticket_details['users_id_lastupdater'], session_token)
                     if user_details:
-                        closed_by = f"{user_details.get('firstname', '')} {user_details.get('realname', '')}".strip() or user_details.get('name', 'Desconhecido')
-                
-                # Obtém informações do solicitante
-                if ticket_details.get('_users_id_requester'):
-                    requester_details = get_user_details(ticket_details['_users_id_requester'], session_token)
-                    if requester_details:
-                        requester_name = f"{requester_details.get('firstname', '')} {requester_details.get('realname', '')}".strip() or requester_details.get('name', 'Desconhecido')
-                        requester_email = requester_details.get('email', '')
+                        closed_by = user_details.get('name', 'Desconhecido')
                 
                 # Obtém os followups (observações) do ticket
                 followups = get_ticket_followups(ticket_id, session_token)
@@ -258,15 +247,10 @@ async def handle_ticket_closed(request: Request):
                 solutions = get_ticket_solution(ticket_id, session_token)
                 logger.info(f"Soluções do ticket {ticket_id}: {solutions}")
                 
-                # Atualiza as informações com os dados reais
-                ticket_name = ticket_details.get('name', ticket_name)
-                solution = ticket_details.get('solution', solution)
-                closed_at = ticket_details.get('date_mod', closed_at)
-                
                 # Se houver soluções, pega a última
                 if solutions and len(solutions) > 0:
                     last_solution = solutions[-1]
-                    solution = last_solution.get('content', solution)
+                    solution = re.sub(r'<[^>]+>', '', last_solution.get('content', '')).strip()
                 
                 # Atualiza o payload com as informações detalhadas
                 payload_data = {
@@ -275,8 +259,7 @@ async def handle_ticket_closed(request: Request):
                     "closed_by": closed_by,
                     "closed_at": closed_at,
                     "solution": solution,
-                    "requester_email": requester_email,
-                    "requester_name": requester_name,
+                    "external_id": external_id,
                     "additional_data": {
                         "status": status,
                         "ticket_details": ticket_details,
@@ -286,6 +269,14 @@ async def handle_ticket_closed(request: Request):
                     }
                 }
             else:
+                # Extrai informações do payload (lidando com diferentes formatos do GLPI)
+                ticket_id = ticket.get('id')
+                ticket_name = ticket.get('name') or f"Ticket #{ticket_id}"
+                closed_by = ticket.get('users_id_lastupdater') or "GLPI"
+                closed_at = ticket.get('date_mod') or "Data não informada"
+                solution = re.sub(r'<[^>]+>', '', raw_payload.get('solution', '')).strip()
+                external_id = ticket.get('external_id', '')
+
                 # Se não conseguir obter detalhes, usa os dados básicos
                 payload_data = {
                     "ticket_id": ticket_id,
@@ -293,8 +284,7 @@ async def handle_ticket_closed(request: Request):
                     "closed_by": closed_by,
                     "closed_at": closed_at,
                     "solution": solution,
-                    "requester_email": requester_email,
-                    "requester_name": requester_name,
+                    "external_id": external_id,
                     "additional_data": {
                         "status": status,
                         "raw_payload": raw_payload
@@ -387,24 +377,6 @@ def send_response_to_platform(response_data: dict):
         if not content:
             logger.warning("Conteúdo da mensagem está vazio. Mensagem não salva no Supabase.")
     
-    # TODO: Enviar para sua plataforma
-    # Exemplo de implementação:
-    # 
-    # if external_id:
-    #     platform_api_url = "https://sua-plataforma.com/api/messages"
-    #     payload = {
-    #         "conversation_id": external_id,
-    #         "message": content,
-    #         "sender": user_name,
-    #         "sender_type": "agent"
-    #     }
-    #     
-    #     response = requests.post(platform_api_url, json=payload)
-    #     if response.status_code == 200:
-    #         logger.info(f"Resposta enviada com sucesso para a plataforma")
-    #     else:
-    #         logger.error(f"Falha ao enviar resposta: {response.status_code}")
-    
     # Por enquanto, apenas registra no log
     if not external_id:
         logger.warning("Ticket não possui external_id. Não é possível enviar para a plataforma.")
@@ -418,54 +390,28 @@ def process_closed_ticket(payload: TicketClosedPayload):
     """
     # Extrai informações do payload
     ticket_id = payload.ticket_id
-    ticket_name = payload.ticket_name
-    closed_by = payload.closed_by
-    closed_at = payload.closed_at
     
-    # Exemplo de processamento
-    logger.info(f"Processando ticket fechado #{ticket_id}")
-    logger.info(f"Nome: {ticket_name}")
-    logger.info(f"Fechado por: {closed_by}")
-    logger.info(f"Data de fechamento: {closed_at}")
-    
-    if payload.solution:
-        logger.info(f"Solução: {payload.solution}")
-    
-    if payload.requester_email:
-        logger.info(f"Solicitante: {payload.requester_name} <{payload.requester_email}>")
-    
-    # Mostra informações adicionais se disponíveis
-    if payload.additional_data:
-        ticket_details = payload.additional_data.get('ticket_details')
-        if ticket_details:
-            logger.info(f"Categoria: {ticket_details.get('itilcategories_id', 'Não informada')}")
-            logger.info(f"Prioridade: {ticket_details.get('priority', 'Não informada')}")
-            logger.info(f"Entidade: {ticket_details.get('entities_id', 'Não informada')}")
+    # Verifica se o ticket está solucionado (status 5) e salva a solução como mensagem no chat
+    if payload.additional_data and payload.additional_data.get('status'):
+        status = payload.additional_data.get('status')
+        status_id = status.get('id') if isinstance(status, dict) else None
         
-        # Mostra os followups (observações)
-        followups = payload.additional_data.get('followups', [])
-        if followups:
-            logger.info(f"Número de observações: {len(followups)}")
-            for i, followup in enumerate(followups, 1):
-                logger.info(f"Observação {i}:")
-                logger.info(f"  - Conteúdo: {followup.get('content', 'N/A')}")
-                logger.info(f"  - Data: {followup.get('date_creation', 'N/A')}")
-                logger.info(f"  - Usuário: {followup.get('users_id', 'N/A')}")
-        
-        # Mostra as soluções
-        solutions = payload.additional_data.get('solutions', [])
-        if solutions:
-            logger.info(f"Número de soluções: {len(solutions)}")
-            for i, sol in enumerate(solutions, 1):
-                logger.info(f"Solução {i}:")
-                logger.info(f"  - Conteúdo: {sol.get('content', 'N/A')}")
-                logger.info(f"  - Data: {sol.get('date_creation', 'N/A')}")
-    
-    # Aqui você pode adicionar sua lógica específica, como:
-    # - Enviar e-mail de notificação
-    # - Atualizar CRM
-    # - Registrar em sistema de relatórios
-    # - Etc.
+        # Se o ticket está solucionado (status 5), salva a solução como mensagem no chat
+        if status_id == 5 and payload.solution and payload.additional_data.get('ticket_details'):
+            ticket_details = payload.additional_data.get('ticket_details')
+            external_id = ticket_details.get('externalid') or ticket_details.get('external_id')
+            
+            if external_id:
+                # Salva a solução como mensagem no chat
+                success = save_message_to_chat(external_id, payload.solution, "Sistema")
+                if success:
+                    logger.info(f"Solução do ticket {ticket_id} salva como mensagem no chat {external_id}")
+                    # TODO implementar fluxo do satisfatório quando ticket for solucionado
+                else:
+                    logger.error(f"Falha ao salvar solução do ticket {ticket_id} como mensagem no chat {external_id}")
+        elif status_id == 6:
+            # TODO implementar fluxo do satisfatório quando ticket for fechado
+            pass
     
     # Exemplo de registro em log
     logger.info(f"Ticket {ticket_id} processado com sucesso")
