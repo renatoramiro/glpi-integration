@@ -7,8 +7,9 @@ e informações de chats do banco de dados Supabase.
 
 import os
 import logging
-from typing import Optional, List, Dict, Any
+from datetime import datetime, timedelta
 from supabase import create_client
+from typing import Optional, List, Dict, Any
 
 # Configuração de logging
 logger = logging.getLogger(__name__)
@@ -183,4 +184,94 @@ def update_chat_ticket_id(user_chat_id: str, ticket_id: int) -> bool:
             return False
     except Exception as e:
         logger.error(f"Erro ao atualizar ticket_id do chat {user_chat_id}: {str(e)}")
+        return False
+
+
+def get_chat_by_external_id(external_id: str):
+    """
+    Busca informações de um chat pelo external_id (idchat).
+    
+    Args:
+        external_id: ID externo do chat (idchat)
+        
+    Returns:
+        Dicionário com informações do chat ou None em caso de erro
+    """
+    if not supabase:
+        logger.error("Cliente Supabase não está inicializado")
+        return None
+    
+    try:
+        result = supabase.table("chats").select("*").eq("idchat", external_id).single().execute()
+        if hasattr(result, 'data') and result.data:
+            return result.data
+        return None
+    except Exception as e:
+        logger.error(f"Erro ao buscar chat pelo external_id {external_id}: {str(e)}")
+        return None
+
+
+def get_chat_by_ticket_id(ticket_id: int):
+    """
+    Busca informações de um chat pelo ticket_id do GLPI.
+    
+    Args:
+        ticket_id: ID do ticket no GLPI
+        
+    Returns:
+        Dicionário com informações do chat ou None em caso de erro
+    """
+    if not supabase:
+        logger.error("Cliente Supabase não está inicializado")
+        return None
+    
+    try:
+        result = supabase.table("chats").select("*").eq("ticket_id", ticket_id).single().execute()
+        if hasattr(result, 'data') and result.data:
+            return result.data
+        return None
+    except Exception as e:
+        logger.error(f"Erro ao buscar chat pelo ticket_id {ticket_id}: {str(e)}")
+        return None
+
+def save_message_to_chat(user_chat_id: str, message: str, author: str = "agent") -> bool:
+    """
+    Salva uma mensagem no chat do Supabase.
+    
+    Args:
+        user_chat_id: ID do chat
+        message: Conteúdo da mensagem
+        author: Autor da mensagem ('user' ou 'agent')
+        
+    Returns:
+        True se o salvamento foi bem-sucedido, False caso contrário
+    """
+    if not supabase:
+        logger.error("Cliente Supabase não está inicializado")
+        return False
+    
+    try:
+        # Prepara os dados da mensagem
+        message_data = {
+            "idchat": user_chat_id,
+            "text": message,
+            "author": author,
+            "createat": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "classification_categoria": "",
+            "classification_agente": "",
+            "classification_palavras_chave": "",
+            "classification_observacoes": ""
+        }
+        
+        # Insere a mensagem
+        result = supabase.table("messages").insert(message_data).execute()
+        
+        if hasattr(result, 'data') and result.data:
+            logger.info(f"Mensagem salva com sucesso no chat {user_chat_id}")
+            return True
+        else:
+            logger.error(f"Falha ao salvar mensagem no chat {user_chat_id}")
+            return False
+    except Exception as e:
+        logger.error(f"Erro ao salvar mensagem no chat {user_chat_id}: {str(e)}")
         return False

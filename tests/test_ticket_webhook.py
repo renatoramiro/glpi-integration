@@ -234,6 +234,44 @@ class TestFollowupWebhook:
         
         mock_send.assert_called_once()
 
+    @patch('ticket_webhook.init_glpi_session')
+    @patch('ticket_webhook.kill_glpi_session')
+    @patch('ticket_webhook.get_ticket_details')
+    @patch('ticket_webhook.get_user_details')
+    @patch('ticket_webhook.send_response_to_platform')
+    def test_followup_added_html_content_stripped(self, mock_send, mock_user, mock_details, mock_kill, mock_init):
+        """Testa que tags HTML são removidas do conteúdo do followup"""
+        mock_init.return_value = "session_token"
+        mock_details.return_value = {
+            'externalid': 'EXT-123',
+            'name': 'Test Ticket'
+        }
+        mock_user.return_value = {
+            'firstname': 'John',
+            'realname': 'Doe',
+            'name': 'johndoe'
+        }
+        
+        payload = {
+            "item": {
+                "id": 456,
+                "items_id": 123,
+                "content": "<p>OBSERVAÇÃO 1</p>",
+                "users_id": 1,
+                "date_creation": "2023-01-01 10:00:00",
+                "is_private": 0
+            }
+        }
+        
+        response = client.post("/webhook/followup-added", json=payload)
+        
+        assert response.status_code == 200
+        
+        # Verifica que o conteúdo foi enviado sem tags HTML
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+        assert call_args["content"] == "OBSERVAÇÃO 1"
+
 class TestAddMessage:
     @patch('ticket_webhook.init_glpi_session')
     @patch('ticket_webhook.kill_glpi_session')
