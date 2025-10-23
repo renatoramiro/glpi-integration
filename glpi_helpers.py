@@ -361,6 +361,257 @@ def get_ticket_solution(ticket_id: int, session_token: str) -> List[Dict[str, An
 
 
 # ============================================================================
+# OPERAÇÕES COM HISTÓRICO DE TICKETS
+# ============================================================================
+
+def get_ticket_logs(ticket_id: int, session_token: str) -> List[Dict[str, Any]]:
+    """
+    Obtém os logs de auditoria de um ticket específico.
+    
+    Args:
+        ticket_id: ID do ticket no GLPI
+        session_token: Token da sessão
+        
+    Returns:
+        Lista de logs ou lista vazia em caso de erro
+    """
+    url = f"{GLPI_BASE_URL}/Ticket/{ticket_id}/Log"
+    headers = {
+        'Content-Type': 'application/json',
+        'Session-Token': session_token,
+        'App-Token': GLPI_APP_TOKEN
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, verify=False)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Falha ao obter logs do ticket {ticket_id}: {response.status_code} - {response.text}")
+            return []
+    except Exception as e:
+        logger.error(f"Erro ao obter logs do ticket {ticket_id}: {str(e)}")
+        return []
+
+
+def search_all_tickets(
+    session_token: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    status_filter: Optional[int] = None,
+    entity_id: Optional[int] = None,
+    range_start: int = 0,
+    range_end: int = 1000
+) -> Optional[Dict[str, Any]]:
+    """
+    Busca todos os tickets com filtros avançados usando a Search API do GLPI.
+    
+    Args:
+        session_token: Token da sessão
+        start_date: Data inicial no formato YYYY-MM-DD (opcional)
+        end_date: Data final no formato YYYY-MM-DD (opcional)
+        status_filter: Filtro de status (opcional)
+        entity_id: ID da entidade (opcional)
+        range_start: Início da paginação (default: 0)
+        range_end: Fim da paginação (default: 1000)
+        
+    Returns:
+        Dicionário com resultados da busca ou None em caso de erro
+    """
+    url = f"{GLPI_BASE_URL}/search/Ticket"
+    headers = {
+        'Content-Type': 'application/json',
+        'Session-Token': session_token,
+        'App-Token': GLPI_APP_TOKEN
+    }
+    
+    # Constrói critérios de busca
+    criteria = []
+    
+    # Adiciona filtro de data inicial se fornecido
+    if start_date:
+        criteria.append({
+            'link': 'AND',
+            'field': 15,  # Campo de data de criação
+            'searchtype': 'morethan',
+            'value': start_date
+        })
+    
+    # Adiciona filtro de data final se fornecido
+    if end_date:
+        criteria.append({
+            'link': 'AND' if start_date else 'AND',
+            'field': 15,  # Campo de data de criação
+            'searchtype': 'lessthan',
+            'value': end_date
+        })
+    
+    # Adiciona filtro de status se fornecido
+    if status_filter is not None:
+        criteria.append({
+            'link': 'AND',
+            'field': 12,  # Campo de status
+            'searchtype': 'equals',
+            'value': str(status_filter)
+        })
+    
+    # Adiciona filtro de entidade se fornecido
+    if entity_id is not None:
+        criteria.append({
+            'link': 'AND',
+            'field': 80,  # Campo de entidade
+            'searchtype': 'equals',
+            'value': entity_id
+        })
+    
+    # Se não há critérios, adiciona um critério básico para buscar todos
+    if not criteria:
+        criteria.append({
+            'link': 'AND',
+            'field': 1,  # Campo de nome
+            'searchtype': 'contains',
+            'value': ''
+        })
+    
+    # Parâmetros da requisição
+    params = {
+        'range': f'{range_start}-{range_end}',
+        'sort': '15',  # Ordenar por data de criação
+        'order': 'DESC',  # Mais recentes primeiro
+        'forcedisplay[0]': '1',   # ID
+        'forcedisplay[1]': '2',   # Nome
+        'forcedisplay[2]': '12',  # Status
+        'forcedisplay[3]': '15',  # Data criação
+        'forcedisplay[4]': '16',  # Data modificação
+        'forcedisplay[5]': '18',  # Usuário solicitante
+        'forcedisplay[6]': '19',  # Usuário técnico
+        'forcedisplay[7]': '21',  # Entidade
+        'forcedisplay[8]': '82',  # ID externo
+    }
+    
+    # Adiciona critérios aos parâmetros
+    for i, criterion in enumerate(criteria):
+        params[f'criteria[{i}][link]'] = criterion['link']
+        params[f'criteria[{i}][field]'] = criterion['field']
+        params[f'criteria[{i}][searchtype]'] = criterion['searchtype']
+        params[f'criteria[{i}][value]'] = criterion['value']
+    
+    try:
+        response = requests.get(url, headers=headers, params=params, verify=False)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Falha ao buscar tickets: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        logger.error(f"Erro ao buscar tickets: {str(e)}")
+        return None
+
+
+def get_all_tickets_with_history(
+    session_token: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    status_filter: Optional[int] = None,
+    entity_id: Optional[int] = None,
+    include_logs: bool = True,
+    include_followups: bool = True,
+    include_solutions: bool = True,
+    max_tickets: int = 100
+) -> List[Dict[str, Any]]:
+    """
+    Obtém todos os tickets com histórico completo (logs, followups, soluções).
+    
+    Args:
+        session_token: Token da sessão
+        start_date: Data inicial no formato YYYY-MM-DD (opcional)
+        end_date: Data final no formato YYYY-MM-DD (opcional)
+        status_filter: Filtro de status (opcional)
+        entity_id: ID da entidade (opcional)
+        include_logs: Incluir logs de auditoria (default: True)
+        include_followups: Incluir followups (default: True)
+        include_solutions: Incluir soluções (default: True)
+        max_tickets: Número máximo de tickets a buscar (default: 100)
+        
+    Returns:
+        Lista de tickets com histórico completo
+    """
+    logger.info(f"Buscando histórico completo de tickets (max: {max_tickets})")
+    
+    # Busca os tickets
+    search_result = search_all_tickets(
+        session_token=session_token,
+        start_date=start_date,
+        end_date=end_date,
+        status_filter=status_filter,
+        entity_id=entity_id,
+        range_start=0,
+        range_end=max_tickets - 1
+    )
+    
+    if not search_result:
+        logger.error("Falha ao buscar tickets")
+        return []
+    
+    tickets_data = search_result.get('data', [])
+    total_count = search_result.get('totalcount', 0)
+    
+    logger.info(f"Encontrados {total_count} tickets, processando {len(tickets_data)}")
+    
+    complete_tickets = []
+    
+    for ticket_dict in tickets_data:
+        # Extrai o ID do ticket (pode estar em diferentes formatos)
+        if isinstance(ticket_dict, dict):
+            ticket_id_key = list(ticket_dict.keys())[0]
+            ticket_id = ticket_dict[ticket_id_key]
+        else:
+            logger.warning(f"Formato de ticket inesperado: {ticket_dict}")
+            continue
+        
+        try:
+            ticket_id = int(ticket_id)
+        except (ValueError, TypeError):
+            logger.warning(f"ID de ticket inválido: {ticket_id}")
+            continue
+        
+        # Obtém detalhes completos do ticket
+        ticket_details = get_ticket_details(ticket_id, session_token)
+        if not ticket_details:
+            logger.warning(f"Não foi possível obter detalhes do ticket {ticket_id}")
+            continue
+        
+        # Prepara o ticket completo
+        complete_ticket = {
+            'id': ticket_id,
+            'details': ticket_details
+        }
+        
+        # Adiciona logs se solicitado
+        if include_logs:
+            logs = get_ticket_logs(ticket_id, session_token)
+            complete_ticket['logs'] = logs
+            logger.debug(f"Ticket {ticket_id}: {len(logs)} logs encontrados")
+        
+        # Adiciona followups se solicitado
+        if include_followups:
+            followups = get_ticket_followups(ticket_id, session_token)
+            complete_ticket['followups'] = followups
+            logger.debug(f"Ticket {ticket_id}: {len(followups)} followups encontrados")
+        
+        # Adiciona soluções se solicitado
+        if include_solutions:
+            solutions = get_ticket_solution(ticket_id, session_token)
+            complete_ticket['solutions'] = solutions
+            logger.debug(f"Ticket {ticket_id}: {len(solutions)} soluções encontradas")
+        
+        complete_tickets.append(complete_ticket)
+    
+    logger.info(f"Histórico completo obtido para {len(complete_tickets)} tickets")
+    return complete_tickets
+
+
+# ============================================================================
 # OPERAÇÕES COM USUÁRIOS
 # ============================================================================
 
