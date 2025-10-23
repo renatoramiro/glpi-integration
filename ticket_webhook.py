@@ -17,7 +17,10 @@ from glpi_helpers import (init_glpi_session,
                         create_ticket_in_glpi,
                         add_followup_to_ticket,
                         search_ticket_by_id,
-                        search_ticket_by_external_id)
+                        search_ticket_by_external_id,
+                        get_ticket_logs,
+                        search_all_tickets,
+                        get_all_tickets_with_history)
 from supabase_helpers import (load_chat_data, supabase, update_chat_ticket_id,
                               get_chat_by_external_id, get_chat_by_ticket_id, save_message_to_chat)
 
@@ -59,6 +62,17 @@ class TicketClosedPayload(BaseModel):
     # Permite campos extras
     class Config:
         extra = "allow"
+
+class TicketHistoryRequest(BaseModel):
+    """Modelo para requisição de histórico de tickets"""
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    status_filter: Optional[int] = None
+    entity_id: Optional[int] = None
+    include_logs: bool = True
+    include_followups: bool = True
+    include_solutions: bool = True
+    max_tickets: int = 100
 
 class CreateTicketPayload(BaseModel):
     """Modelo para o payload de criação de ticket"""
@@ -234,6 +248,7 @@ async def handle_ticket_closed(request: Request):
                 external_id = ticket_details.get('externalid')
                 
                 # Obtém informações do usuário que fechou o ticket
+                closed_by = "Desconhecido"
                 if ticket_details.get('users_id_lastupdater'):
                     user_details = get_user_details(ticket_details['users_id_lastupdater'], session_token)
                     if user_details:
@@ -251,6 +266,8 @@ async def handle_ticket_closed(request: Request):
                 if solutions and len(solutions) > 0:
                     last_solution = solutions[-1]
                     solution = re.sub(r'<[^>]+>', '', last_solution.get('content', '')).strip()
+                else:
+                    solution = ""
                 
                 # Atualiza o payload com as informações detalhadas
                 payload_data = {
@@ -366,7 +383,8 @@ def send_response_to_platform(response_data: dict):
         formatted_message = content
         
         # Salva a mensagem no chat
-        success = save_message_to_chat(user_chat_id, formatted_message, user_name)
+        author = user_name if user_name else "Sistema"
+        success = save_message_to_chat(user_chat_id, formatted_message, author)
         if success:
             logger.info(f"Mensagem salva com sucesso no chat {user_chat_id}")
         else:
@@ -397,11 +415,14 @@ def process_closed_ticket(payload: TicketClosedPayload):
         status_id = status.get('id') if isinstance(status, dict) else None
         
         # Se o ticket está solucionado (status 5), salva a solução como mensagem no chat
-        if status_id == 5 and payload.solution and payload.additional_data.get('ticket_details'):
+        if status_id == 5 and payload.solution and payload.additional_data:
             ticket_details = payload.additional_data.get('ticket_details')
-            external_id = ticket_details.get('externalid') or ticket_details.get('external_id')
+            if ticket_details:
+                external_id = ticket_details.get('externalid') or ticket_details.get('external_id')
+            else:
+                external_id = None
             
-            if external_id:
+            if external_id and payload.solution:
                 # Salva a solução como mensagem no chat
                 success = save_message_to_chat(external_id, payload.solution, "Sistema")
                 if success:
@@ -473,7 +494,10 @@ async def handle_followup_added(request: Request):
             if user_id:
                 user_details = get_user_details(user_id, session_token)
                 if user_details:
-                    user_name = f"{user_details.get('firstname', '')} {user_details.get('realname', '')}".strip() or user_details.get('name', 'Consultor GLPI')
+                    firstname = user_details.get('firstname', '') or ''
+                    realname = user_details.get('realname', '') or ''
+                    name = user_details.get('name', 'Consultor GLPI') or 'Consultor GLPI'
+                    user_name = f"{firstname} {realname}".strip() or name
             
             # Prepara os dados para enviar de volta para a plataforma
             response_data = {
@@ -613,6 +637,195 @@ async def add_message_to_ticket(request: Request):
     except Exception as e:
         logger.error(f"Erro ao adicionar mensagem ao ticket: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
+
+@app.post("/api/ticket-history", summary="Busca histórico completo de tickets")
+async def get_ticket_history(request: Request):
+    """
+    Endpoint para buscar o histórico completo de tickets do GLPI.
+    
+    Utiliza a API REST do GLPI para obter todos os tickets com seus respectivos
+    logs de auditoria, followups e soluções, com base nos filtros fornecidos.
+    
+    Payload esperado (opcional):
+    {
+        "start_date": "2025-01-01",        // Data inicial (opcional)
+        "end_date": "2025-12-31",          // Data final (opcional)
+        "status_filter": 5,                // Filtro de status (opcional)
+        "entity_id": 0,                    // ID da entidade (opcional)
+        "include_logs": true,              // Incluir logs de auditoria
+        "include_followups": true,         // Incluir followups
+        "include_solutions": true,         // Incluir soluções
+        "max_tickets": 100                 // Número máximo de tickets
+    }
+    
+    Exemplo de uso:
+    curl -X POST http://localhost:8000/api/ticket-history \
+         -H "Content-Type: application/json" \
+         -d '{"start_date": "2025-01-01", "max_tickets": 50}'
+    """
+    try:
+        # Captura o payload
+        payload = await request.json()
+        logger.info(f"Recebida requisição para buscar histórico de tickets: {payload}")
+        
+        # Valida o payload usando o modelo Pydantic
+        history_request = TicketHistoryRequest(**payload)
+        
+        # Inicializa sessão com o GLPI
+        session_token = init_glpi_session()
+        if not session_token:
+            logger.error("Falha ao iniciar sessão com o GLPI")
+            raise HTTPException(status_code=500, detail="Falha ao conectar ao GLPI")
+        
+        try:
+            # Busca o histórico completo dos tickets
+            tickets_history = get_all_tickets_with_history(
+                session_token=session_token,
+                start_date=history_request.start_date,
+                end_date=history_request.end_date,
+                status_filter=history_request.status_filter,
+                entity_id=history_request.entity_id,
+                include_logs=history_request.include_logs,
+                include_followups=history_request.include_followups,
+                include_solutions=history_request.include_solutions,
+                max_tickets=history_request.max_tickets
+            )
+            
+            # Prepara estatísticas
+            total_tickets = len(tickets_history)
+            total_logs = sum(len(ticket.get('logs', [])) for ticket in tickets_history)
+            total_followups = sum(len(ticket.get('followups', [])) for ticket in tickets_history)
+            total_solutions = sum(len(ticket.get('solutions', [])) for ticket in tickets_history)
+            
+            # Prepara o resumo
+            summary = {
+                "total_tickets": total_tickets,
+                "total_logs": total_logs,
+                "total_followups": total_followups,
+                "total_solutions": total_solutions,
+                "filters_applied": {
+                    "start_date": history_request.start_date,
+                    "end_date": history_request.end_date,
+                    "status_filter": history_request.status_filter,
+                    "entity_id": history_request.entity_id,
+                    "include_logs": history_request.include_logs,
+                    "include_followups": history_request.include_followups,
+                    "include_solutions": history_request.include_solutions,
+                    "max_tickets": history_request.max_tickets
+                }
+            }
+            
+            logger.info(f"Histórico obtido com sucesso: {total_tickets} tickets, {total_logs} logs, {total_followups} followups, {total_solutions} soluções")
+            
+            return {
+                "status": "success",
+                "message": "Histórico de tickets obtido com sucesso",
+                "summary": summary,
+                "tickets": tickets_history
+            }
+            
+        finally:
+            # Finaliza a sessão com o GLPI
+            kill_glpi_session(session_token)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar histórico de tickets: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar histórico de tickets: {str(e)}")
+
+@app.get("/api/ticket-history", summary="Busca histórico completo de tickets (GET)")
+async def get_ticket_history_get(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    status_filter: Optional[int] = None,
+    entity_id: Optional[int] = None,
+    include_logs: bool = True,
+    include_followups: bool = True,
+    include_solutions: bool = True,
+    max_tickets: int = 100
+):
+    """
+    Endpoint GET para buscar o histórico completo de tickets do GLPI.
+    
+    Parâmetros de query:
+    - start_date: Data inicial no formato YYYY-MM-DD (opcional)
+    - end_date: Data final no formato YYYY-MM-DD (opcional)
+    - status_filter: Filtro de status (opcional)
+    - entity_id: ID da entidade (opcional)
+    - include_logs: Incluir logs de auditoria (default: true)
+    - include_followups: Incluir followups (default: true)
+    - include_solutions: Incluir soluções (default: true)
+    - max_tickets: Número máximo de tickets (default: 100)
+    
+    Exemplo de uso:
+    curl -X GET "http://localhost:8000/api/ticket-history?start_date=2025-01-01&max_tickets=50"
+    """
+    try:
+        logger.info(f"Recebida requisição GET para buscar histórico de tickets com parâmetros: {locals()}")
+        
+        # Inicializa sessão com o GLPI
+        session_token = init_glpi_session()
+        if not session_token:
+            logger.error("Falha ao iniciar sessão com o GLPI")
+            raise HTTPException(status_code=500, detail="Falha ao conectar ao GLPI")
+        
+        try:
+            # Busca o histórico completo dos tickets
+            tickets_history = get_all_tickets_with_history(
+                session_token=session_token,
+                start_date=start_date,
+                end_date=end_date,
+                status_filter=status_filter,
+                entity_id=entity_id,
+                include_logs=include_logs,
+                include_followups=include_followups,
+                include_solutions=include_solutions,
+                max_tickets=max_tickets
+            )
+            
+            # Prepara estatísticas
+            total_tickets = len(tickets_history)
+            total_logs = sum(len(ticket.get('logs', [])) for ticket in tickets_history)
+            total_followups = sum(len(ticket.get('followups', [])) for ticket in tickets_history)
+            total_solutions = sum(len(ticket.get('solutions', [])) for ticket in tickets_history)
+            
+            # Prepara o resumo
+            summary = {
+                "total_tickets": total_tickets,
+                "total_logs": total_logs,
+                "total_followups": total_followups,
+                "total_solutions": total_solutions,
+                "filters_applied": {
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "status_filter": status_filter,
+                    "entity_id": entity_id,
+                    "include_logs": include_logs,
+                    "include_followups": include_followups,
+                    "include_solutions": include_solutions,
+                    "max_tickets": max_tickets
+                }
+            }
+            
+            logger.info(f"Histórico obtido com sucesso: {total_tickets} tickets, {total_logs} logs, {total_followups} followups, {total_solutions} soluções")
+            
+            return {
+                "status": "success",
+                "message": "Histórico de tickets obtido com sucesso",
+                "summary": summary,
+                "tickets": tickets_history
+            }
+            
+        finally:
+            # Finaliza a sessão com o GLPI
+            kill_glpi_session(session_token)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar histórico de tickets: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar histórico de tickets: {str(e)}")
 
 @app.post("/webhook/debug", summary="Endpoint de debug para capturar qualquer payload")
 async def debug_webhook(request: Request):
