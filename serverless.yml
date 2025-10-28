@@ -1,0 +1,84 @@
+###################################################################################################
+# 📄 CONFIGURAÇÃO SERVERLESS PARA DEPLOY NA AWS
+###################################################################################################
+
+# Comandos úteis:
+# serverless deploy -s dev --verbose
+# serverless deploy -s prod --verbose
+# serverless deploy function -f main -s dev --verbose
+# serverless logs -f main -s dev -t
+
+service: evolux-glpi-service
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: us-east-1
+  profile: evolux
+  stage: ${opt:stage, 'dev'}
+  environment:
+    STAGE: ${self:provider.stage}
+    USER_TOKEN: ${env:USER_TOKEN}
+    GLPI_BASE_URL: ${env:GLPI_BASE_URL}
+    APP_TOKEN: ${env:APP_TOKEN}
+    GLPI_DB_USER: ${env:GLPI_DB_USER}
+    GLPI_DB_PASSWORD: ${env:GLPI_DB_PASSWORD}
+    GLPI_DB_NAME: ${env:GLPI_DB_NAME}
+    SUPABASE_URL: ${env:SUPABASE_URL}
+    SUPABASE_KEY: ${env:SUPABASE_KEY}
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - lambda:InvokeFunction
+      Resource: arn:aws:lambda:${self:provider.region}:*:function:*
+
+functions:
+  main:
+    handler: main.lambda_handler
+    timeout: 30
+    events:
+      - http:
+          path: api/create-ticket
+          method: post
+          cors: true
+      - http:
+          path: webhook/ticket-closed
+          method: post
+          cors: true
+      - http:
+          path: webhook/followup-added
+          method: post
+          cors: true
+      - http:
+          path: api/add-message
+          method: post
+          cors: true
+      - http:
+          path: api/ticket-history
+          method: post
+          cors: true
+      - http:
+          path: api/ticket-history
+          method: get
+          cors: true
+
+plugins:
+  - serverless-python-requirements
+  - serverless-dotenv-plugin
+
+custom:
+  pythonRequirements:
+    dockerizePip: true
+    useStaticCache: false
+    useDownloadCache: false
+    slim: false
+    strip: true
+
+package:
+  patterns:
+    - '!./**' # Exclui tudo do pacote
+    - './main.py' # Inclui o handler principal
+    - './glpi_helper.py' # Inclui helper do GLPI
+    - './glpi_helpers.py' # Inclui helpers do GLPI (mantido para compatibilidade)
+    - './supabase_helpers.py' # Inclui helpers do Supabase
+    - './requirements.txt' # Inclui dependências
