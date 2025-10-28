@@ -51,7 +51,12 @@ def get_chat_info(user_chat_id: str) -> Optional[Dict[str, Any]]:
             return result.data
         return None
     except Exception as e:
-        logger.error(f"Erro ao buscar informações do chat {user_chat_id}: {str(e)}")
+        # Trata especificamente erros de UUID inválido
+        error_msg = str(e)
+        if "invalid input syntax for type uuid" in error_msg:
+            logger.warning(f"ID do chat {user_chat_id} não é um UUID válido. Continuando com valores padrão.")
+        else:
+            logger.error(f"Erro ao buscar informações do chat {user_chat_id}: {str(e)}")
         return None
 
 
@@ -84,7 +89,12 @@ def get_chat_messages(user_chat_id: str) -> List[Dict[str, Any]]:
         
         return messages
     except Exception as e:
-        logger.error(f"Erro ao buscar mensagens do chat {user_chat_id}: {str(e)}")
+        # Trata especificamente erros de UUID inválido
+        error_msg = str(e)
+        if "invalid input syntax for type uuid" in error_msg:
+            logger.warning(f"ID do chat {user_chat_id} não é um UUID válido. Retornando lista vazia de mensagens.")
+        else:
+            logger.error(f"Erro ao buscar mensagens do chat {user_chat_id}: {str(e)}")
         return []
 
 
